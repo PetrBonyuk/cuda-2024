@@ -8,24 +8,10 @@ The output values ​​were:
 
 #include <CL/opencl.hpp>
 #include <iostream>
-#include <string>
-#include <utility>
 
-std::vector<float> GeluOCL(const std::vector<float>& input) {
-	std::string kernelCode = R"(
-__kernel void myKernel(__global const float* input, __global float* output, int size) {
-    int i = get_global_id(0);
-
-    if (i < size) {
-        const float x = input[i];
-        output[i] = x / (1.0f + exp(-1.59577f * (x + 0.044715f * x * x * x)));
-    }
-}
-)";
-
+std::vector<float> GeluOCL(const std::vector<float> &input) {
 	std::vector<cl::Platform> platforms;
 	cl::Platform::get(&platforms);
-
 	cl::Platform platform = platforms.front();
 
 	std::vector<cl::Device> devices;
@@ -35,30 +21,46 @@ __kernel void myKernel(__global const float* input, __global float* output, int 
 	cl::Context context(device);
 	cl::CommandQueue queue(context);
 
+	std::string codeKernel = R"(
+__kernel void gelu_kernel(__global const float* x, __global float* y, int countElem) {
+  int i = get_global_id(0);
+
+  if (i < countElem) {
+      float val = x[i];
+      float tmp = val * (1.595769122f + val * val * 0.071354816f);
+      y[i] = val - val / (1.0f + exp(tmp));
+  }
+}
+)";
+
 	cl::Program::Sources sources;
-	sources.emplace_back(std::move(kernelCode));
-
+	sources.emplace_back(std::move(codeKernel));
 	cl::Program program(context, sources);
-	program.build();
 
-	cl::Kernel kernel(program, "myKernel");
+	if (program.build() != CL_SUCCESS) {
+		std::cerr << "\033[1;31merror\033[0m: ";
+		std::cerr << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << '\n';
+		return {};
+	}
 
-	size_t size = input.size();
-	size_t sizeInBytes = size * sizeof(*input.data());
 
-	cl::Buffer bufferInput(context, CL_MEM_READ_ONLY, sizeInBytes);
-	cl::Buffer bufferOutput(context, CL_MEM_WRITE_ONLY, sizeInBytes);
+	if (input.empty()) return {};
+	auto size = input.size();
+	auto countBytes = size * sizeof(float);
 
-	queue.enqueueWriteBuffer(bufferInput, CL_TRUE, 0, sizeInBytes, input.data());
+	cl::Buffer bufferInput(context, CL_MEM_READ_ONLY, countBytes);
+	cl::Buffer bufferOutput(context, CL_MEM_WRITE_ONLY, countBytes);
 
+	queue.enqueueWriteBuffer(bufferInput, CL_TRUE, 0, countBytes, input.data());
+
+	cl::Kernel kernel(program, "gelu_kernel");
 	kernel.setArg(0, bufferInput);
 	kernel.setArg(1, bufferOutput);
 	kernel.setArg(2, static_cast<int>(size));
-	queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(size),
-		cl::NullRange);
+	queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(size), cl::NullRange);
 
 	std::vector<float> output(size);
-	queue.enqueueReadBuffer(bufferOutput, CL_TRUE, 0, sizeInBytes, output.data());
+	queue.enqueueReadBuffer(bufferOutput, CL_TRUE, 0, countBytes, output.data());
 
 	return output;
 }
